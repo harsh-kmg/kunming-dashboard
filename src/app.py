@@ -5,29 +5,43 @@ from datetime import datetime
 from io import BytesIO
 import streamlit as st
 from utility import *
+
 def load_data(file):
-    file_type = file.split('.')[-1]
-    if file_type == 'csv':
-        return pd.read_csv(file)
-    elif file_type == 'xlsx':
-        df=pd.read_excel(file,sheet_name=None)
-        df_dict = {}
-        for sheet_name, df_ in df.items():
-            df_dict[sheet_name] = df_
-        return df_dict
-    
-    elif file_type == 'db':
-        from sqlalchemy import create_engine
-        cnx = create_engine('sqlite:///kunmings.db').connect()
-        file_name = file.split('.')[0]
-        df = pd.read_sql(file_name, cnx)
-        cnx.close()
-        return df
+    # Handle different input types
+    if isinstance(file, str):
+        # String file path (for database files)
+        file_type = file.split('.')[-1]
+        if file_type == 'csv':
+            return pd.read_csv(file)
+        elif file_type == 'db':
+            from sqlalchemy import create_engine
+            cnx = create_engine('sqlite:///kunmings.db').connect()
+            file_name = file.split('.')[0]
+            df = pd.read_sql(file_name, cnx)
+            cnx.close()
+            return df
+    else:
+        # File object from Streamlit uploader
+        if hasattr(file, 'name'):
+            file_type = file.name.split('.')[-1]
+        else:
+            file_type = 'xlsx'  # Default assumption for uploaded files
+        
+        if file_type in ['xlsx', 'xls']:
+            df = pd.read_excel(file, sheet_name=None)
+            df_dict = {}
+            for sheet_name, df_ in df.items():
+                df_dict[sheet_name] = df_
+            return df_dict
+        elif file_type == 'csv':
+            return pd.read_csv(file)
+
 def save_data(df):
     from sqlalchemy import create_engine
     cnx = create_engine('sqlite:///kunmings.db').connect()
     df.to_sql('kunmings', cnx, index=False, if_exists='replace')
     cnx.close()
+
 def create_bucket(df,stock_bucket=stock_bucket):
     """
     df : Monthly Stock Data Sheet
@@ -54,6 +68,7 @@ def create_date_join(df):
     df['Year'] = pd.to_datetime('today').year
     df['Join'] = df['Month'].astype(str) + '-' + df['Year'].map(lambda x: x-2000).astype(str)
     return df
+
 def concatenate_first_two_rows(df):
     result = {}
     for col in df.columns:
@@ -61,6 +76,7 @@ def concatenate_first_two_rows(df):
         value2 = str(df.iloc[1][col])
         result[col] = f"{value1}_{value2}"
     return result
+
 def populate_max_qty(df,MONTHLY_STOCK_DATA):
     """
     df : Max Qty Sheet
@@ -141,6 +157,7 @@ def populate_buying_prices(df,MONTHLY_STOCK_DATA):
     MONTHLY_STOCK_DATA['Max Buying Price'] = _BUYING_PRICE_
     MONTHLY_STOCK_DATA['Max Buying Price']=MONTHLY_STOCK_DATA['Max Buying Price'].map(lambda x:x[0] if isinstance(x, list) and len(x) > 0 else 0)
     return MONTHLY_STOCK_DATA
+
 def calculate_buying_price_avg(df):
     df['Buying Price Avg'] = df['Max Buying Price'] * df['Weight']
     return df
@@ -165,6 +182,7 @@ def get_quarter(month):
         return f'Q4-{yr}'
     else:
         return None
+
 def populate_quarter(df):
     """
     df : Monthly Stock Data Sheet
@@ -174,10 +192,8 @@ def populate_quarter(df):
 
 def poplutate_monthly_stock_sheet(file):
     """
-    df_stock : Monthly Stock Data Sheet
-    df_buying : Buying Max Prices Sheet
-    df_min_qty : Buying Min Qty Sheet
-    df_max_qty : Max Qty Sheet
+    Process the uploaded file object directly
+    file: Streamlit uploaded file object or file path
     """
     df = load_data(file)
     df_stock = df['Monthly Stock Data']
@@ -195,6 +211,7 @@ def poplutate_monthly_stock_sheet(file):
     df_stock = populate_buying_prices(df_buying, df_stock)
     df_stock = calculate_buying_price_avg(df_stock)
     return df_stock
+
 def calculate_qoq_variance_percentage(current_quarter_price, previous_quarter_price):
     """
     Calculate quarter-on-quarter variance percentage of price.
@@ -225,7 +242,6 @@ def calculate_qoq_variance_percentage(current_quarter_price, previous_quarter_pr
         variance_percentage = ((current_quarter_price - previous_quarter_price) / (previous_quarter_price+current_quarter_price)) * 100
     return round(variance_percentage, 2)
 
-
 def calculate_qoq_variance_series(price_data):
     """
     Calculate quarter-on-quarter variance for a series of quarterly prices.
@@ -245,6 +261,7 @@ def calculate_qoq_variance_series(price_data):
         variances.append(variance)
     
     return variances
+
 def monthly_variance(df,col):
     analysis=df.groupby(['Month','Year'],as_index=False)[col].sum()
     analysis['Num_Month'] = analysis['Month'].map(month_map)
@@ -252,7 +269,6 @@ def monthly_variance(df,col):
     analysis['Monthly_change']=analysis[col].pct_change().fillna(0).round(2)*100
     analysis['qaurter_change']=[0]+calculate_qoq_variance_series(analysis[col].tolist())
     return analysis
-
 
 def get_filtered_data(FILTER_MONTH,FILTE_YEAR,FILTER_SHAPE,FILTER_COLOR,FILTER_BUCKET,FILTER_MONTHLY_VAR_COL):
     """
@@ -284,10 +300,14 @@ def get_filtered_data(FILTER_MONTH,FILTE_YEAR,FILTER_SHAPE,FILTER_COLOR,FILTER_B
         MOM_QoQ_Percent_Change = 0
     return [filter_data,int(max_buying_price),int(current_avg_cost), int(MOM_Variance), MOM_Percent_Change, MOM_QoQ_Percent_Change]
 
-def get_final_data(file,PARENT_DF = 'kunmings.db'):
+def get_final_data(file, PARENT_DF='kunmings.db'):
+    """
+    Process uploaded file object and merge with existing data
+    file: Streamlit uploaded file object
+    """
     df = poplutate_monthly_stock_sheet(file)
     parent_df = load_data(PARENT_DF)
-    master_df = pd.concat([df, parent_df], ignore_index=True,axis=0)
+    master_df = pd.concat([df, parent_df], ignore_index=True, axis=0)
     save_data(master_df)
     return master_df
 
@@ -295,26 +315,37 @@ def main():
     st.set_page_config(page_title="Yellow Diamond Dashboard", layout="wide")
     st.title("Yellow Diamond Dashboard")
     st.markdown("Upload Excel files to process multiple sheets and filter data.")
+    
     # Initialize session state
     if 'data_processed' not in st.session_state:
         st.session_state.data_processed = False
     if 'master_df' not in st.session_state:
         st.session_state.master_df = pd.DataFrame()
+    
     # Sidebar for controls
     st.sidebar.header("Controls")
+    
     # File upload
     uploaded_file = st.sidebar.file_uploader(
         "Upload Excel File",
         type=['xlsx', 'xls'],
         help="Upload an Excel file with multiple sheets"
     )
+    
     # Main content area
     if uploaded_file is not None and not st.session_state.data_processed:
-        with st.spinner("Processing Excel file..."):
-            st.subheader("🗄️ Master Database")
-            st.session_state.master_df  = get_final_data(uploaded_file.name)
-            st.session_state.data_processed = True
-    if not st.session_state.master_df.empty or uploaded_file is not None:
+        try:
+            with st.spinner("Processing Excel file..."):
+                st.subheader("🗄️ Master Database")
+                # Pass the file object directly instead of the filename
+                st.session_state.master_df = get_final_data(uploaded_file)
+                st.session_state.data_processed = True
+                st.success("File processed successfully!")
+        except Exception as e:
+            st.error(f"Error processing file: {str(e)}")
+            st.session_state.data_processed = False
+    
+    if not st.session_state.master_df.empty:
         Month,Year,Shape,Color,Bucket,Variance_Column = st.columns(6)
         with Month:
             categories = ["None"]+list(st.session_state.master_df['Month'].unique())
@@ -334,61 +365,68 @@ def main():
         with Variance_Column:
             variance_columns = ["None"]+['Buying Price Avg','Max Buying Price']
             selected_variance_column = st.selectbox("Select Variance Column", variance_columns)
+        
         # Apply filters
         filtered_df = st.session_state.master_df.copy()
         if (selected_month != "None") & (selected_year != "None") & (selected_shape != "None") & (selected_color != "None") & (selected_bucket != "None") & (selected_variance_column != "None"):
-            filter_data,max_buying_price,current_avg_cost,MOM_Variance,MOM_Percent_Change,MOM_QoQ_Percent_Change = get_filtered_data(selected_month,\
-                                                                                                                        int(selected_year),\
-                                                                                                                        selected_shape,\
-                                                                                                                        selected_color,\
-                                                                                                                        selected_bucket,\
-                                                                                                                        selected_variance_column)
-            # Display summary metrics
-            st.subheader("📊 Summary Metrics")
-            mbp,cac,mom_var,mom_perc,qoq_perc = st.columns(5)
-            with mbp:
-                st.metric("Max Buying Price", f"${max_buying_price:,.2f}")
-            with cac:
-                st.metric("Current Avg Cost", f"${current_avg_cost:,.2f}")
-            with mom_var:
-                st.metric("MOM Variance ", f"{MOM_Variance:,.2f}%")
-            with mom_perc:
-                st.metric("MOM Percent Change", f"{MOM_Percent_Change:.2f}%")
-            with qoq_perc:
-                st.metric("MOM QoQ Percent Change", f"{MOM_QoQ_Percent_Change:.2f}%")
-            st.subheader("📊 Data Table")
-            st.dataframe(
-                filter_data,
-                use_container_width=True,
-                hide_index=True
-                    )
-            # Download processed data
-            st.subheader("💾 Download Filtered Data")
-            csv = filter_data.loc[:,['Product Id','Shape key','Color Key','avg','Min Qty','Max Qty','Buying Price Avg','Max Buying Price']].to_csv(index=False)
-            st.download_button(
-            label="Download Filtered Data as CSV",
-            data=csv,
-            file_name=f"filtered_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-            )
-            st.subheader("💾 Download Master Data")
-            csv = filtered_df.to_csv(index=False)
-            st.download_button(
-            label="Download Master Data as CSV",
-            data=csv,
-            file_name=f"processed_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-            )
+            try:
+                filter_data,max_buying_price,current_avg_cost,MOM_Variance,MOM_Percent_Change,MOM_QoQ_Percent_Change = get_filtered_data(selected_month,\
+                                                                                                                            int(selected_year),\
+                                                                                                                            selected_shape,\
+                                                                                                                            selected_color,\
+                                                                                                                            selected_bucket,\
+                                                                                                                            selected_variance_column)
+                # Display summary metrics
+                st.subheader("📊 Summary Metrics")
+                mbp,cac,mom_var,mom_perc,qoq_perc = st.columns(5)
+                with mbp:
+                    st.metric("Max Buying Price", f"${max_buying_price:,.2f}")
+                with cac:
+                    st.metric("Current Avg Cost", f"${current_avg_cost:,.2f}")
+                with mom_var:
+                    st.metric("MOM Variance ", f"{MOM_Variance:,.2f}%")
+                with mom_perc:
+                    st.metric("MOM Percent Change", f"{MOM_Percent_Change:.2f}%")
+                with qoq_perc:
+                    st.metric("MOM QoQ Percent Change", f"{MOM_QoQ_Percent_Change:.2f}%")
+                
+                st.subheader("📊 Data Table")
+                st.dataframe(
+                    filter_data,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Download processed data
+                st.subheader("💾 Download Filtered Data")
+                csv = filter_data.loc[:,['Product Id','Shape key','Color Key','avg','Min Qty','Max Qty','Buying Price Avg','Max Buying Price']].to_csv(index=False)
+                st.download_button(
+                    label="Download Filtered Data as CSV",
+                    data=csv,
+                    file_name=f"filtered_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+                
+                st.subheader("💾 Download Master Data")
+                csv = filtered_df.to_csv(index=False)
+                st.download_button(
+                    label="Download Master Data as CSV",
+                    data=csv,
+                    file_name=f"processed_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+            except Exception as e:
+                st.error(f"Error filtering data: {str(e)}")
         else:
-            
-            st.info("No data in master database. Upload an Excel file to get started!")
+            st.info("Please select all filter options to view results.")
     else:
         st.info("No data in master database. Upload an Excel file to get started!")
+    
     # Reset button
     if st.sidebar.button("Reset Data Processing"):
         st.session_state.data_processed = False
         st.session_state.master_df = pd.DataFrame()
         st.rerun()
-    
+
 if __name__ == "__main__":
     main()
